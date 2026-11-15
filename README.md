@@ -87,10 +87,14 @@ You'll see the normal Claude login / chat UI in Vivaldi's side panel. Two harmle
 
 Since 1.0.94 the side panel embeds claude.ai, and the static path alone is no longer enough: the panel renders but shows **"Can't reach the Claude extension."** ([anthropics/claude-code#95975](https://github.com/anthropics/claude-code/issues/95975)). Vivaldi hosts side panels inside a tab, which breaks two assumptions. `install.ps1` patches both:
 
-1. **`tabId` binding.** The service worker opens `sidepanel.html?tabId=N` through `setOptions()`, which Vivaldi ignores. Without `tabId` the panel never connects to the service worker. The script adds `vivaldi-tabid.js`, which binds the panel to the active tab on load and rebinds it when the bound tab closes. To switch tabs, close and reopen the panel.
+1. **`tabId` binding.** The service worker opens `sidepanel.html?tabId=N` through `setOptions()`, which Vivaldi ignores. Without `tabId` the panel never connects to the service worker. The script adds `vivaldi-tabid.js`, which binds the panel to the active tab on load and rebinds it when the bound tab closes. To switch tabs, close and reopen the panel. The panel URL is never changed: Vivaldi 8.3 resets the panel on any URL change, even `history.replaceState`, which caused a reload loop. The loader passes the parameters through `window.__vivaldiSearch`, and the panel module reads them from there.
 2. **Sender checks.** The service worker treats a sender as the side panel only when `sender.tab === undefined`. In Vivaldi the panel and its claude.ai frame both have a `tab`, so every request fails with `sender is not an extension page`. The script changes these checks to compare the sender URL with the extension's own pages, which still rejects content scripts and web pages.
 
-Tested on Windows 11 with extension 1.0.100: chat, navigation, typing, page reading and screenshots all work. `install.sh` does not apply these patches yet.
+### Vivaldi 8.3+: "anchor tab group not established"
+
+In Vivaldi 8.3, `chrome.tabs.group()` returns a group id but groups nothing: `tab.groupId` stays `-1` and `chrome.tabGroups.get()` fails. The extension tracks the tabs Claude controls with tab groups, so every browser tool fails with `anchor tab group not established`. The script loads `vivaldi-groups-shim.js` before the service worker and the panel. It emulates `chrome.tabs.group/ungroup`, `chrome.tabGroups.get/query/update`, `groupId` on tabs and `chrome.tabs.query({groupId})`, and keeps the groups in `chrome.storage.session`. The emulated groups don't appear in Vivaldi's UI.
+
+Tested on Windows 11 with Vivaldi 8.3.4191.44 and extension 1.0.100: chat, reading the page and opening links all work, including the permission prompt. `install.sh` does not apply these patches yet.
 
 ## Troubleshooting
 

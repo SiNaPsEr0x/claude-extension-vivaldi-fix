@@ -114,8 +114,6 @@ $htmlPath = Join-Path $Destination 'sidepanel.html'
 $html = [System.IO.File]::ReadAllText($htmlPath)
 $m = [regex]::Match($html, '<script type="module" crossorigin src="(/assets/sidepanel-[^"]+\.js)"></script>')
 if (-not $m.Success) { Write-Err2 "sidepanel module tag not found; extension layout changed."; exit 1 }
-# Vivaldi remembers the panel URL, so a stale ?tabId survives reopening: always
-# rebind to the active tab on load, and again when the bound tab is closed.
 $loader = @"
 (function () {
   var q = new URLSearchParams(location.search);
@@ -124,21 +122,39 @@ $loader = @"
     s.type = 'module'; s.crossOrigin = ''; s.src = '$($m.Groups[1].Value)';
     document.head.appendChild(s);
   }
-  function rebind(id) { q.set('tabId', id); location.replace('sidepanel.html?' + q); }
+  // Active tab of a normal window, never the panel's own tab (Vivaldi hosts it in a tab).
+  function activeTab(cb) {
+    chrome.tabs.getCurrent(function (self) {
+      chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: 'normal' }, function (tabs) {
+        cb(tabs.filter(function (t) {
+          var u = t.url || t.pendingUrl || '';
+          return (!self || t.id !== self.id) && u && !u.startsWith(location.origin);
+        })[0]);
+      });
+    });
+  }
   if (q.get('mode') === 'window') return boot();
-  chrome.tabs.query({ active: true, lastFocusedWindow: true }, function (tabs) {
-    var active = tabs.filter(function (t) { return !t.url || !t.url.startsWith(location.origin); })[0];
-    if (active && String(active.id) !== q.get('tabId')) return rebind(active.id);
+  // Vivaldi 8.3 resets the panel to its default path on any URL change (navigation or
+  // history.replaceState), which looped forever. So never touch the URL: hand the
+  // params to the patched module through window.__vivaldiSearch.
+  activeTab(function (active) {
+    if (active) { q.set('tabId', active.id); window.__vivaldiSearch = '?' + q; }
     boot();
     chrome.tabs.onRemoved.addListener(function (id) {
-      if (String(id) !== q.get('tabId')) return;
-      chrome.tabs.query({ active: true, lastFocusedWindow: true }, function (t) { if (t[0]) rebind(t[0].id); });
+      if (String(id) === q.get('tabId')) location.reload(); // reload rebinds to the active tab
     });
   });
 })();
 "@
 [System.IO.File]::WriteAllText((Join-Path $Destination 'vivaldi-tabid.js'), $loader, (New-Object System.Text.UTF8Encoding $false))
 $html = $html.Replace($m.Value, '<script src="/vivaldi-tabid.js"></script>')
+$modPath = Join-Path $Destination ($m.Groups[1].Value.TrimStart('/'))
+$mod = [System.IO.File]::ReadAllText($modPath)
+$hits = ([regex]::Matches($mod, [regex]::Escape('new URLSearchParams(window.location.search)'))).Count
+if ($hits -eq 0) { Write-Err2 "location.search reads not found in sidepanel module; extension layout changed."; exit 1 }
+$mod = $mod.Replace('new URLSearchParams(window.location.search)', 'new URLSearchParams(window.__vivaldiSearch??window.location.search)')
+[System.IO.File]::WriteAllText($modPath, $mod, (New-Object System.Text.UTF8Encoding $false))
+Write-Ok "Redirected $hits location.search reads in the panel module"
 [System.IO.File]::WriteAllText($htmlPath, $html, (New-Object System.Text.UTF8Encoding $false))
 Write-Ok "Added vivaldi-tabid.js loader"
 
@@ -164,8 +180,23 @@ foreach ($p in @(
     if ([regex]::IsMatch($sw, $p.re)) { $sw = [regex]::Replace($sw, $p.re, $p.to); $n++ }
 }
 if ($n -lt 2) { Write-Warn2 "Only $n/2 external sender checks patched; extension layout changed." }
+# Surface the real cause instead of a generic message when the anchor group fails.
+$sw = $sw.Replace('catch(t){return{ok:!1,error:"anchor tab-group initialization failed"}}', 'catch(t){return{ok:!1,error:"anchor tab-group initialization failed: "+(t&&t.message||t)}}')
+
 [System.IO.File]::WriteAllText($swPath, $sw, (New-Object System.Text.UTF8Encoding $false))
 Write-Ok "Sender checks now URL-based"
+
+# --- 4d. Emulate tab groups ---------------------------------------------------
+# Vivaldi 8.3: chrome.tabs.group() returns an id but groups nothing, so every
+# browser tool fails with "anchor tab group not established". Load a shim that
+# emulates chrome.tabGroups before the service worker and the panel module.
+Write-Step "Adding tab group emulation"
+Copy-Item (Join-Path $PSScriptRoot 'vivaldi-groups-shim.js') $Destination
+$loaderPath = Join-Path $Destination 'service-worker-loader.js'
+[System.IO.File]::WriteAllText($loaderPath, "import './vivaldi-groups-shim.js';`n" + [System.IO.File]::ReadAllText($loaderPath), (New-Object System.Text.UTF8Encoding $false))
+$html = [System.IO.File]::ReadAllText($htmlPath).Replace('<script src="/vivaldi-tabid.js"></script>', '<script src="/vivaldi-groups-shim.js"></script><script src="/vivaldi-tabid.js"></script>')
+[System.IO.File]::WriteAllText($htmlPath, $html, (New-Object System.Text.UTF8Encoding $false))
+Write-Ok "Shim loaded in service worker and side panel"
 
 # --- 5. Verify native messaging host registration ----------------------------
 Write-Step "Checking native-messaging host registration for Vivaldi"
