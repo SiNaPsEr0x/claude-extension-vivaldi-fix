@@ -153,8 +153,19 @@ $mod = [System.IO.File]::ReadAllText($modPath)
 $hits = ([regex]::Matches($mod, [regex]::Escape('new URLSearchParams(window.location.search)'))).Count
 if ($hits -eq 0) { Write-Err2 "location.search reads not found in sidepanel module; extension layout changed."; exit 1 }
 $mod = $mod.Replace('new URLSearchParams(window.location.search)', 'new URLSearchParams(window.__vivaldiSearch??window.location.search)')
-[System.IO.File]::WriteAllText($modPath, $mod, (New-Object System.Text.UTF8Encoding $false))
 Write-Ok "Redirected $hits location.search reads in the panel module"
+# Side panel detection: the panel treats chrome.tabs.getCurrent() === undefined as
+# "I am the side panel". Vivaldi returns the panel's own tab, so the panel shows
+# "Claude isn't available on this page". Also accept a top-level sidepanel.html
+# (framed copies are already handled by the window.top check that precedes it).
+$spRe = 'if\(void 0===(\w)\)return\{kind:"sidePanel"\}'
+if ([regex]::IsMatch($mod, $spRe)) {
+    $mod = [regex]::Replace($mod, $spRe, 'if(void 0===$1||location.pathname==="/sidepanel.html")return{kind:"sidePanel"}')
+    Write-Ok "Side panel detection no longer relies on tabs.getCurrent()"
+} else {
+    Write-Warn2 "Side panel detection check not found; skipped (older extension layout?)."
+}
+[System.IO.File]::WriteAllText($modPath, $mod, (New-Object System.Text.UTF8Encoding $false))
 [System.IO.File]::WriteAllText($htmlPath, $html, (New-Object System.Text.UTF8Encoding $false))
 Write-Ok "Added vivaldi-tabid.js loader"
 
@@ -167,8 +178,21 @@ Write-Step "Patching service worker sender check"
 $swPath = (Get-ChildItem (Join-Path $Destination 'assets') -Filter 'service-worker*.js' | Select-Object -First 1).FullName
 $sw = [System.IO.File]::ReadAllText($swPath)
 $re = 'return void 0===(\w)\.tab&&\1\.id===chrome\.runtime\.id\}'
-if (-not [regex]::IsMatch($sw, $re)) { Write-Err2 "sender check not found; extension layout changed."; exit 1 }
-$sw = [regex]::Replace($sw, $re, 'return $1.id===chrome.runtime.id&&($1.url||"").startsWith(chrome.runtime.getURL(""))}')
+# 1.0.109+: the check moved to a shared chunk and already verifies the sender URL:
+#   void 0===e.tab&&e.id===chrome.runtime.id&&"string"==typeof e.url&&e.url.startsWith(`chrome-extension://${chrome.runtime.id}/`)
+# Dropping only the tab condition leaves the same URL-based check as above.
+$reNew = 'void 0===(\w)\.tab&&(\1\.id===chrome\.runtime\.id&&"string"==typeof \1\.url&&\1\.url\.startsWith\()'
+if ([regex]::IsMatch($sw, $re)) {
+    $sw = [regex]::Replace($sw, $re, 'return $1.id===chrome.runtime.id&&($1.url||"").startsWith(chrome.runtime.getURL(""))}')
+} else {
+    $chunk = Get-ChildItem (Join-Path $Destination 'assets') -Filter '*.js' |
+        Where-Object { [regex]::IsMatch([System.IO.File]::ReadAllText($_.FullName), $reNew) } |
+        Select-Object -First 1
+    if (-not $chunk) { Write-Err2 "sender check not found; extension layout changed."; exit 1 }
+    $src = [regex]::Replace([System.IO.File]::ReadAllText($chunk.FullName), $reNew, '$2')
+    [System.IO.File]::WriteAllText($chunk.FullName, $src, (New-Object System.Text.UTF8Encoding $false))
+    Write-Ok "Sender check patched in $($chunk.Name)"
+}
 # Same for claude.ai framed in the panel (onMessageExternal): its sender.tab is the
 # panel's own tab, so trust it when that tab is sidepanel.html.
 $inPanel = '(void 0===$1.tab||($1.tab.url||"").startsWith(chrome.runtime.getURL("sidepanel.html")))'
