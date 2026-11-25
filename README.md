@@ -106,6 +106,10 @@ Three more changes, checked by hand on Vivaldi (Windows 11) with extension 1.0.1
 
 The panel also appends the real bridge error to "anchor tab group not established", so a failure shows its cause in the chat.
 
+Two harmless warnings that fill `vivaldi://extensions` → Errors are silenced too (each is skipped if its code isn't found):
+- `The AudioContext was not allowed to start`: the silent keep-alive context is now created only after a user gesture. Before that it was suspended and did nothing.
+- `Unchecked runtime.lastError: Debugger is not attached to the tab`: the `debugger.detach` callback now reads `lastError`.
+
 **Known limits**
 - The panel binds to the tab that is active when it opens. If a browser-internal page (`chrome://…`) is active, browser tools fail: open a normal page first, then open the panel.
 - After the extension fails once, start a **new chat** (the old one keeps the failed state), or reload the extension.

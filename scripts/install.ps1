@@ -238,7 +238,38 @@ $sw = $sw.Replace('catch(t){return{ok:!1,error:"anchor tab-group initialization 
 [System.IO.File]::WriteAllText($swPath, $sw, (New-Object System.Text.UTF8Encoding $false))
 Write-Ok "Sender checks now URL-based"
 
-# --- 4d. Emulate tab groups ---------------------------------------------------
+# --- 4d. Silence two harmless warnings in the extension's error log ------------
+# Both come from the extension's own code (they also appear in Chrome); they don't
+# break anything, but they fill vivaldi://extensions -> Errors. Each tweak is
+# skipped with a warning if the code isn't found (minified names change per version).
+Write-Step "Silencing harmless extension warnings"
+$assetsDir = Join-Path $Destination 'assets'
+$tweaks = @(
+    # The silent keep-alive AudioContext is created before any user gesture, so it
+    # starts suspended anyway and Chrome logs "AudioContext was not allowed to start".
+    @{ what = 'AudioContext autoplay warning'
+       old  = 'try{if(!y){y=new AudioContext;'
+       new  = 'try{if(!y&&navigator.userActivation?.hasBeenActive){y=new AudioContext;' },
+    # debugger.detach callback ignores lastError -> "Unchecked runtime.lastError:
+    # Debugger is not attached to the tab". Reading it marks the error as handled.
+    @{ what = 'debugger.detach lastError'
+       old  = 'chrome.debugger.detach({tabId:t},()=>{e.clearPressNetwork(t),n(!0)})'
+       new  = 'chrome.debugger.detach({tabId:t},()=>{void chrome.runtime.lastError,e.clearPressNetwork(t),n(!0)})' }
+)
+foreach ($tw in $tweaks) {
+    $patched = $false
+    foreach ($jsFile in Get-ChildItem $assetsDir -Filter '*.js') {
+        $text = [System.IO.File]::ReadAllText($jsFile.FullName)
+        if ($text.Contains($tw.old)) {
+            [System.IO.File]::WriteAllText($jsFile.FullName, $text.Replace($tw.old, $tw.new), (New-Object System.Text.UTF8Encoding $false))
+            $patched = $true
+            break
+        }
+    }
+    if ($patched) { Write-Ok "Fixed: $($tw.what)" } else { Write-Warn2 "$($tw.what): code not found, skipped (harmless)." }
+}
+
+# --- 4e. Emulate tab groups ---------------------------------------------------
 # Vivaldi 8.3: chrome.tabs.group() returns an id but groups nothing, so every
 # browser tool fails with "anchor tab group not established". Load a shim that
 # emulates chrome.tabGroups before the service worker and the panel module.
