@@ -212,6 +212,18 @@ foreach ($p in @(
     if ([regex]::IsMatch($sw, $p.re)) { $sw = [regex]::Replace($sw, $p.re, $p.to); $n++ }
 }
 if ($n -lt 2) { Write-Warn2 "Only $n/2 external sender checks patched; extension layout changed." }
+# The cowork bridge reads the panel's tabId from the sender URL. vivaldi-tabid.js
+# never changes the URL (it passes tabId through window.__vivaldiSearch), so the
+# bridge rejected every request ("panelTabId does not match the sending document")
+# and no tab group was created. Fall back to the tabId the panel sends; the sender
+# is already verified as an extension page above.
+$tidRe = 'const (\w+)=(\w+)\((\w)\.url\),(\w+)=(\w)\.panelTabId;'
+if ([regex]::IsMatch($sw, $tidRe)) {
+    $sw = [regex]::Replace($sw, $tidRe, 'const $1=$2($3.url)??$5.panelTabId,$4=$5.panelTabId;')
+    Write-Ok "Bridge accepts the panel's tabId when the URL has none"
+} else {
+    Write-Warn2 "Bridge tabId check not found; skipped."
+}
 # Surface the real cause instead of a generic message when the anchor group fails.
 $sw = $sw.Replace('catch(t){return{ok:!1,error:"anchor tab-group initialization failed"}}', 'catch(t){return{ok:!1,error:"anchor tab-group initialization failed: "+(t&&t.message||t)}}')
 
