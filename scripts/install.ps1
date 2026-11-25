@@ -224,6 +224,14 @@ if ([regex]::IsMatch($sw, $tidRe)) {
 } else {
     Write-Warn2 "Bridge tabId check not found; skipped."
 }
+# The panel replaces the bridge's error with a generic "anchor tab group not
+# established". Append the real reason so failures are diagnosable from the chat.
+$reasonOld = '{content:[{type:"text",text:"anchor tab group not established"}],is_error:!0});o=n.tabGroupId'
+if ($mod.Contains($reasonOld)) {
+    $mod = $mod.Replace($reasonOld, '{content:[{type:"text",text:"anchor tab group not established: "+(n.error||JSON.stringify(n))}],is_error:!0});o=n.tabGroupId')
+    [System.IO.File]::WriteAllText($modPath, $mod, (New-Object System.Text.UTF8Encoding $false))
+    Write-Ok "Panel shows the real bridge error"
+}
 # Surface the real cause instead of a generic message when the anchor group fails.
 $sw = $sw.Replace('catch(t){return{ok:!1,error:"anchor tab-group initialization failed"}}', 'catch(t){return{ok:!1,error:"anchor tab-group initialization failed: "+(t&&t.message||t)}}')
 
