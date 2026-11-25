@@ -62,6 +62,14 @@ $latest = $extRoots |
     Sort-Object { [version]($_.Name -replace '_\d+$','') } -Descending |
     Select-Object -First 1
 
+# Loading the patched copy (same extension ID) can make Vivaldi delete the Web Store
+# files, leaving an empty Extensions\<id> folder. Stop before deleting the destination.
+if (-not $latest -or -not (Test-Path (Join-Path $latest.FullName 'manifest.json'))) {
+    Write-Err2 "Claude extension folder found, but it has no installed version."
+    Write-Err2 "Remove 'Claude (Vivaldi-patched)', re-enable or reinstall Claude from the Chrome Web Store, then re-run."
+    exit 1
+}
+
 Write-Ok "Found: $($latest.FullName)"
 
 # --- 2. Confirm destination ---------------------------------------------------
